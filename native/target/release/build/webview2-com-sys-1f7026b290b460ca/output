@@ -1,0 +1,2 @@
+cargo:rustc-link-search=native=C:\Users\bot40\.config\freebuff-desktop\local-projects\7b6c4c43-bd3a-46b0-9138-22c14c0f058d\native\target\release\build\webview2-com-sys-1f7026b290b460ca\out\x64
+cargo:rustc-link-lib=advapi32

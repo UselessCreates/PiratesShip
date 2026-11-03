@@ -1,0 +1,10 @@
+C:\Users\bot40\.config\freebuff-desktop\local-projects\7b6c4c43-bd3a-46b0-9138-22c14c0f058d\native\target\release\deps\litemap-998d5e5f59ec7b84.d: C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\lib.rs C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\map.rs C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\store\mod.rs C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\store\slice_impl.rs
+
+C:\Users\bot40\.config\freebuff-desktop\local-projects\7b6c4c43-bd3a-46b0-9138-22c14c0f058d\native\target\release\deps\liblitemap-998d5e5f59ec7b84.rlib: C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\lib.rs C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\map.rs C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\store\mod.rs C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\store\slice_impl.rs
+
+C:\Users\bot40\.config\freebuff-desktop\local-projects\7b6c4c43-bd3a-46b0-9138-22c14c0f058d\native\target\release\deps\liblitemap-998d5e5f59ec7b84.rmeta: C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\lib.rs C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\map.rs C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\store\mod.rs C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\store\slice_impl.rs
+
+C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\lib.rs:
+C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\map.rs:
+C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\store\mod.rs:
+C:\Users\bot40\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\litemap-0.8.3\src\store\slice_impl.rs:

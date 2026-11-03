@@ -1,0 +1,4 @@
+cargo:rerun-if-changed=app.rc
+cargo:rerun-if-changed=app.ico
+cargo:rerun-if-changed=app-icon.rgba
+cargo:rustc-link-arg=C:\Users\bot40\.config\freebuff-desktop\local-projects\7b6c4c43-bd3a-46b0-9138-22c14c0f058d\native\target\release\build\piratesship-d0d6d4347d6f2a09\out\app.res
