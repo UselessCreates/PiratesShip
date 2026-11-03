@@ -10,6 +10,10 @@
 </p>
 
 <p align="center">
+  <strong>AI Made this README. I hate writing these...</strong>
+</p>
+
+<p align="center">
   <strong>Evidence-first reconstruction. Your model. Your machine.</strong>
 </p>
 
