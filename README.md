@@ -25,7 +25,7 @@
 ---
 
 <details>
-<summary><strong>📖 About PiratesShip</strong></summary>
+<summary><strong>About PiratesShip</strong></summary>
 
 PiratesShip is a Windows desktop app: **Rust owns the window, Node owns the work.**
 
@@ -117,7 +117,7 @@ If the executable can't find Node, it still opens a window, explains what's miss
 </details>
 
 <details>
-<summary><strong>⚙️ First-time setup</strong></summary>
+<summary><strong>First-time setup</strong></summary>
 
 ### 1. Prerequisites
 
@@ -269,7 +269,7 @@ Choose **No model** and the pipeline still runs:
 </details>
 
 <details>
-<summary><strong>⌨️ Commands</strong></summary>
+<summary><strong>Commands</strong></summary>
 
 | Command | Description |
 | --- | --- |
@@ -307,7 +307,7 @@ Select **All options** to open the full wizard with base URLs, extra fields, and
 </details>
 
 <details>
-<summary><strong>📁 Where builds are saved</strong></summary>
+<summary><strong>Where builds are saved</strong></summary>
 
 Builds are saved under your user profile:
 
@@ -330,25 +330,7 @@ Builds are plain static files. You can double-click `site\index.html` to open th
 </details>
 
 <details>
-<summary><strong>🔒 The private prompt</strong></summary>
-
-`host/prompt.mjs` contains the doctrine the model is held to:
-
-- Evidence-first rules
-- Token derivation
-- State coverage
-- The craft bar
-- The output contract
-- Originality limits
-
-It is not user-editable or exposed through an API route, screen, or log line. It is only sent to the model you selected.
-
-Three prompt variants ship with PiratesShip: **plan**, **build**, and **repair**.
-
-</details>
-
-<details>
-<summary><strong>🎨 Logo and branding</strong></summary>
+<summary><strong>Logo and branding</strong></summary>
 
 The ship artwork ships as `ui/assets/ship.png` and is drawn as a mask, recoloured for the current theme (light ink on dark, dark ink on bright). This keeps it readable in both themes.
 
@@ -385,7 +367,7 @@ If the grid is almost pure black, it is lifted for contrast and you'll be notifi
 </details>
 
 <details>
-<summary><strong>🧪 Development and testing</strong></summary>
+<summary><strong> Development and testing</strong></summary>
 
 Run the environment checks:
 
@@ -412,7 +394,7 @@ You can also run `node --check` on the files, run the doctor, and run a smoke se
 </details>
 
 <details>
-<summary><strong>⚠️ Limitations</strong></summary>
+<summary><strong>Limitations</strong></summary>
 
 - `proxy.cors.dev` is a proxy, not a browser. It does not run JavaScript, caps responses at 6 MiB, times out after 30 seconds, and only supports GET/HEAD. Client-rendered apps may return thin HTML; screenshots still capture the layout.
 - `pageshot.site` is a public screenshot service. Some sites block it.
@@ -424,7 +406,7 @@ You can also run `node --check` on the files, run the doctor, and run a smoke se
 </details>
 
 <details>
-<summary><strong>🧭 Recreating things responsibly</strong></summary>
+<summary><strong>Recreating things responsibly</strong></summary>
 
 PiratesShip recreates **structure, hierarchy, motion, and craft**. It is designed not to copy trademarks, logos, brand names, proprietary illustrations, or verbatim marketing copy.
 
