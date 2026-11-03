@@ -1,0 +1,19 @@
+{
+  "name": "piratesship",
+  "productName": "PiratesShip",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PiratesShip - recreate any site, app or game. Rust window + Node engine.",
+  "type": "module",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "start": "node host/host.mjs",
+    "dev": "node host/host.mjs --open",
+    "doctor": "node tools/doctor.mjs",
+    "art": "node tools/import-art.mjs",
+    "native": "cargo build --release --manifest-path native/Cargo.toml",
+    "package": "powershell -ExecutionPolicy Bypass -File tools/build-windows.ps1"
+  }
+}

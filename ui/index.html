@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PiratesShip</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="frame">
+  <div class="screen">
+
+    <section id="wizard" class="view" hidden>
+      <div class="wiz-scroll">
+        <div class="wiz-inner">
+          <canvas id="wiz-logo" class="logo-sm" aria-label="PiratesShip"></canvas>
+          <div class="wiz-tag">recreate anything · free</div>
+
+          <nav class="steps" id="steps" aria-label="Setup steps">
+            <button class="step" data-step="1"><em>01</em> prerequisites</button>
+            <button class="step" data-step="2"><em>02</em> ai</button>
+            <button class="step" data-step="3"><em>03</em> style</button>
+          </nav>
+
+          <div id="wiz-body" class="wiz-body"></div>
+        </div>
+      </div>
+      <div class="wiz-foot">
+        <span class="hint" id="wiz-hint">step 1 of 3</span>
+        <div class="wiz-actions">
+          <button class="btn ghost" id="wiz-back" type="button">back</button>
+          <button class="btn" id="wiz-next" type="button">next</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="main" class="view" hidden>
+      <div class="main-scroll" id="main-scroll">
+        <div class="logo-wrap">
+          <canvas id="logo" aria-label="PiratesShip"></canvas>
+          <div class="logo-meta"><span class="ver" id="ver">v0.1.0</span></div>
+        </div>
+
+        <div class="cmds" id="cmds"></div>
+        <div class="feed" id="feed" hidden></div>
+      </div>
+
+      <div class="dock">
+        <div class="model-menu" id="model-menu" hidden role="dialog" aria-label="Choose model"></div>
+        <div class="chips">
+          <span class="chip-label">recreate</span>
+          <button class="chip" data-kind="site" type="button">site</button>
+          <button class="chip" data-kind="app" type="button">app</button>
+          <button class="chip" data-kind="game" type="button">game</button>
+          <button class="chip" data-kind="other" type="button">other</button>
+          <span class="grow"></span>
+          <button class="chip model" id="model-chip" type="button" aria-haspopup="dialog" aria-expanded="false">no model</button>
+        </div>
+        <div class="composer"><span class="sigil">&gt;</span><input id="input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="what should I recreate?" /><span class="caret" id="caret"></span></div>
+        <div class="statusline"><span id="hintline">enter send · /help for commands</span><span id="modelline"></span></div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<input type="file" id="art-file" accept=".html,.htm,text/html" hidden />
+<div id="drop-hint" class="drop-hint">drop your ascii-art.html to use it as the logo</div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
