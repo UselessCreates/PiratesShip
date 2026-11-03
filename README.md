@@ -47,7 +47,7 @@ PiratesShip.exe ──> webview window (ui/) ──> local engine (host/) ──
 </details>
 
 <details>
-<summary><strong>🚀 Run it</strong></summary>
+<summary><strong>Run it</strong></summary>
 
 There are two ways to run PiratesShip.
 
@@ -187,7 +187,7 @@ Use `/keys` to rotate keys. The setup wizard can also clear them.
 </details>
 
 <details>
-<summary><strong>🛠️ Using PiratesShip</strong></summary>
+<summary><strong>Using PiratesShip</strong></summary>
 
 The target type sits next to the model selector.
 
