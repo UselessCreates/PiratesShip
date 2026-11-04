@@ -265,7 +265,7 @@ Choose **No model** and the pipeline still runs:
 </details>
 
 <details>
-<summary><strong>Commands</strong></summary>
+<summary><strong> Commands</strong></summary>
 
 | Command | Description |
 | --- | --- |
