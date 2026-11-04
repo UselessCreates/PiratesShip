@@ -1,249 +1,236 @@
-
-
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::env;
 use std::io::{BufRead, BufReader};
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::mpsc::channel;
+use std::thread;
 use std::time::Duration;
 
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop};
-use tao::window::{Icon, WindowBuilder};
+use tao::window::WindowBuilder;
 use wry::WebViewBuilder;
 
-include!(concat!(env!("OUT_DIR"), "/icon_data.rs"));
-
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
-#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const READY: &str = "PIRATES_READY ";
+const FAILED: &str = "PIRATES_ERROR ";
+const ENGINE_TIMEOUT: Duration = Duration::from_secs(25);
 
 fn exe_dir() -> PathBuf {
-    std::env::current_exe()
+    env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn find_host_dir() -> Option<PathBuf> {
-    let dir = exe_dir();
-    let mut candidates = vec![
-        dir.join("host"),
-        dir.join("..").join("host"),
-        dir.join("..").join("..").join("host"),
-        dir.join("..").join("..").join("..").join("host"),
-        dir.join("..").join("..").join("..").join("..").join("host"),
-    ];
-    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("host"));
-    candidates
-        .into_iter()
-        .map(|c| c.canonicalize().unwrap_or(c))
-        .find(|c| c.join("host.mjs").is_file())
-}
-
-fn which(cmd: &str) -> Option<PathBuf> {
-    let out = Command::new("where").arg(cmd).output().ok()?;
-    if !out.status.success() {
-        return None;
+fn host_script(start: &Path) -> Option<PathBuf> {
+    let mut dir = Some(start);
+    for _ in 0..4 {
+        let current = dir?;
+        let candidate = current.join("host").join("host.mjs");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        dir = current.parent();
     }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(PathBuf::from)
-        .find(|p| p.is_file())
+    None
 }
 
-fn find_node() -> Option<PathBuf> {
-    if let Ok(custom) = std::env::var("PIRATESHIP_NODE") {
-        let p = PathBuf::from(custom);
-        if p.is_file() {
-            return Some(p);
+fn find_node(dir: &Path) -> PathBuf {
+    if let Ok(configured) = env::var("PIRATESHIP_NODE") {
+        let path = PathBuf::from(configured);
+        if path.is_file() {
+            return path;
         }
     }
-
-    let bundled = exe_dir().join("runtime").join("node.exe");
-    if bundled.is_file() {
-        return Some(bundled);
+    for local in [dir.join("runtime").join("node.exe"), dir.join("node.exe")] {
+        if local.is_file() {
+            return local;
+        }
     }
-    if let Some(p) = which("node") {
-        return Some(p);
+    let mut roots = Vec::new();
+    for key in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Ok(value) = env::var(key) {
+            roots.push(PathBuf::from(value).join("nodejs"));
+        }
     }
-    let mut common = Vec::new();
-    if let Ok(pf) = std::env::var("ProgramFiles") {
-        common.push(PathBuf::from(pf).join("nodejs").join("node.exe"));
+    if let Ok(value) = env::var("LOCALAPPDATA") {
+        roots.push(PathBuf::from(value).join("Programs").join("nodejs"));
     }
-    if let Ok(pf) = std::env::var("ProgramFiles(x86)") {
-        common.push(PathBuf::from(pf).join("nodejs").join("node.exe"));
+    for root in roots {
+        let candidate = root.join("node.exe");
+        if candidate.is_file() {
+            return candidate;
+        }
     }
-    if let Ok(la) = std::env::var("LOCALAPPDATA") {
-        common.push(PathBuf::from(la).join("Programs").join("nodejs").join("node.exe"));
-    }
-    common.into_iter().find(|p| p.is_file())
+    PathBuf::from("node")
 }
 
-fn spawn_engine(host_dir: &Path, node: &Path) -> Option<(Child, String)> {
-    let mut cmd = Command::new(node);
-    cmd.arg("host.mjs")
+fn drain(result: std::process::ChildStdout) -> std::sync::mpsc::Receiver<Result<String, String>> {
+    let (tx, rx) = channel();
+    thread::spawn(move || {
+        for line in BufReader::new(result).lines().map_while(Result::ok) {
+            if let Some(url) = line.strip_prefix(READY) {
+                let _ = tx.send(Ok(url.trim().to_string()));
+                return;
+            }
+            if let Some(message) = line.strip_prefix(FAILED) {
+                let _ = tx.send(Err(message.trim().to_string()));
+                return;
+            }
+        }
+        let _ = tx.send(Err(String::new()));
+    });
+    rx
+}
+
+fn stderr_tail(stream: std::process::ChildStderr) -> thread::JoinHandle<String> {
+    thread::spawn(move || {
+        let mut text = String::new();
+        for line in BufReader::new(stream).lines().map_while(Result::ok).take(24) {
+            text.push_str(&line);
+            text.push('\n');
+        }
+        text
+    })
+}
+
+fn start_engine(dir: &Path) -> Result<(Child, String), String> {
+    let script = host_script(dir).ok_or_else(|| {
+        format!(
+            "the engine folder is missing. Keep host\\ next to PiratesShip.exe (looked in {}).",
+            dir.display()
+        )
+    })?;
+    let node = find_node(dir);
+    let mut child = Command::new(&node)
+        .arg(&script)
         .arg("--native")
-        .current_dir(host_dir)
+        .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-
-    let mut child = cmd.spawn().ok()?;
-    let stdout = child.stdout.take()?;
-    let stderr = child.stderr.take();
-
-    let (tx, rx) = mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(|l| l.ok()) {
-            if let Some(url) = line.strip_prefix("PIRATES_READY ") {
-                let _ = tx.send(url.trim().to_string());
-            }
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| {
+            format!(
+                "Node could not be started ({}). Install Node 18 or newer from nodejs.org, or drop a copy of node.exe into runtime\\ next to PiratesShip.exe.",
+                e
+            )
+        })?;
+    let stdout = child.stdout.take().ok_or_else(|| "the engine produced no output.".to_string())?;
+    let errors = child.stderr.take().map(stderr_tail);
+    let ready = drain(stdout);
+    match ready.recv_timeout(ENGINE_TIMEOUT) {
+        Ok(Ok(url)) => Ok((child, url)),
+        Ok(Err(message)) => {
+            let _ = child.kill();
+            let tail = errors.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+            let tail = tail.trim();
+            Err(if message.is_empty() && tail.is_empty() {
+                "the engine stopped before it was ready.".to_string()
+            } else if message.is_empty() {
+                tail.to_string()
+            } else {
+                message
+            })
         }
-    });
-
-    std::thread::spawn(move || {
-        if let Some(err) = stderr {
-            let reader = BufReader::new(err);
-            for line in reader.lines().map_while(Result::ok) {
-                eprintln!("[engine] {line}");
-            }
-        }
-    });
-
-    match rx.recv_timeout(Duration::from_secs(45)) {
-        Ok(url) => Some((child, url)),
         Err(_) => {
             let _ = child.kill();
-            None
+            Err("the engine did not answer within 25 seconds.".to_string())
         }
     }
 }
 
-#[allow(unused_mut)]
-fn kill_tree(child: &mut Child) {
-    #[cfg(windows)]
-    {
-        let pid = child.id().to_string();
-        let mut cmd = Command::new("taskkill");
-        cmd.args(["/PID", pid.as_str(), "/T", "/F"]);
-        cmd.creation_flags(CREATE_NO_WINDOW);
-        let _ = cmd.output();
+fn stop_engine(child: &mut Option<Child>) {
+    if let Some(mut running) = child.take() {
+        let pid = running.id().to_string();
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid, "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = running.kill();
+        let _ = running.wait();
     }
-    let _ = child.kill();
 }
 
-fn error_page(message: &str) -> String {
-    let safe = message
+fn error_page(reason: &str, dir: &Path) -> String {
+    let escaped = reason
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;");
+    let where_ = dir.display().to_string().replace('\\', "/");
     format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><title>PiratesShip</title>
-<style>
-  html,body{{height:100%;margin:0;background:#08080a;color:#e9e9ee;
-    font:14px/1.65 ui-monospace,"Cascadia Mono",Consolas,monospace}}
-  .wrap{{max-width:680px;margin:0 auto;padding:64px 28px}}
-  h1{{font-size:18px;font-weight:600;letter-spacing:.02em;margin:0 0 6px}}
-  .sub{{color:#7d818e;margin:0 0 26px}}
-  pre{{background:#101014;border:1px solid #22232b;border-radius:8px;padding:16px;
-    white-space:pre-wrap;color:#f5a97f;font-size:12.5px}}
-  ol{{color:#a9adb8;padding-left:20px}} li{{margin:6px 0}}
-  code{{background:#15151b;border:1px solid #22232b;border-radius:4px;padding:1px 5px;color:#e9e9ee}}
-  a{{color:#f5a97f}}
-</style></head><body><div class="wrap">
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>PiratesShip</title><style>
+html,body{{margin:0;height:100%;background:#0b0f14;color:#e8eef5;font:15px/1.55 -apple-system,Segoe UI,system-ui,sans-serif}}
+main{{max-width:640px;margin:0 auto;padding:12vh 28px}}
+h1{{margin:0 0 14px;font-size:24px;letter-spacing:-.01em}}
+p{{margin:0 0 12px;color:#9fb0c3}}
+pre{{margin:18px 0;padding:14px 16px;background:#111823;border:1px solid #1d2836;border-radius:10px;color:#c8d4e0;white-space:pre-wrap;font:13px/1.5 ui-monospace,Consolas,monospace}}
+code{{color:#cbd8e6}}
+a{{color:#7fb6ff}}
+small{{display:block;margin-top:22px;color:#6d7f92}}
+</style></head><body><main>
 <h1>PiratesShip could not start its engine</h1>
-<p class="sub">The window is fine — Node.js was not found, or the host folder is missing.</p>
-<pre>{safe}</pre>
-<ol>
-  <li>Install Node.js LTS: <a href="https://nodejs.org/en/download">nodejs.org/en/download</a>
-      (or <code>winget install --exact --id OpenJS.NodeJS.LTS</code>), then reopen this app.</li>
-  <li>Keep <code>host\</code> and <code>ui\</code> next to <code>PiratesShip.exe</code>.</li>
-  <li>Or run it from source in a terminal: <code>npm start</code>.</li>
-</ol>
-</div></body></html>"#
+<p>The window is fine, but the Node process behind it did not come up.</p>
+<pre>{escaped}</pre>
+<p>Marina thinks this is fixable: install Node 18 or newer from <a href="https://nodejs.org/en/download">nodejs.org/en/download</a>, then close this window and open <code>PiratesShip.exe</code> again.</p>
+<p>If Node is already installed, check that a <code>host</code> folder sits next to the exe and that <code>runtime/node.exe</code> is present in the packaged build.</p>
+<small>Looking in {where_}</small>
+</main></body></html>"#
     )
 }
 
 fn main() {
-    let mut engine: Option<(Child, String)> = None;
-    let mut failure: Option<String> = None;
-
-    let host_dir = find_host_dir();
-    let node = find_node();
-
-    match (&host_dir, &node) {
-        (Some(h), Some(n)) => match spawn_engine(h, n) {
-            Some(pair) => engine = Some(pair),
-            None => {
-                failure = Some(format!(
-                    "Engine handshake failed.\n  host: {}\n  node: {}",
-                    h.display(),
-                    n.display()
-                ))
-            }
-        },
-        (None, _) => {
-            failure = Some(format!(
-                "Could not find host\\host.mjs.\nLooked next to: {}",
-                exe_dir().display()
-            ))
-        }
-        (_, None) => {
-            failure = Some("Could not find node.exe (PATH, runtime\\node.exe, Program Files).".to_string())
-        }
-    }
-
+    let dir = exe_dir();
+    let started = start_engine(&dir);
     let event_loop = EventLoop::new();
-    let mut window_builder = WindowBuilder::new()
+    let window = match WindowBuilder::new()
         .with_title("PiratesShip")
-        .with_inner_size(LogicalSize::new(1240.0, 860.0))
-        .with_min_inner_size(LogicalSize::new(900.0, 620.0));
-
-    if !ICON_RGBA.is_empty() {
-        if let Ok(icon) = Icon::from_rgba(ICON_RGBA.to_vec(), ICON_SIZE, ICON_SIZE) {
-            window_builder = window_builder.with_window_icon(Some(icon));
-        }
-    }
-    let window = window_builder
+        .with_inner_size(LogicalSize::new(1280.0, 860.0))
+        .with_min_inner_size(LogicalSize::new(960.0, 640.0))
         .build(&event_loop)
-        .expect("failed to create the PiratesShip window");
-
-    let target = match &engine {
-        Some((_, url)) => url.clone(),
-        None => String::new(),
+    {
+        Ok(window) => window,
+        Err(e) => {
+            eprintln!("window: {e}");
+            std::process::exit(1);
+        }
     };
-
-    let builder = WebViewBuilder::new();
-    let webview = if target.is_empty() {
-        builder.with_html(error_page(&failure.unwrap_or_default()))
-    } else {
-        builder.with_url(target)
-    }
-    .build(&window)
-    .expect("failed to create the WebView2 view");
-
+    let mut child = None;
+    let view = match started {
+        Ok((engine, url)) => {
+            child = Some(engine);
+            WebViewBuilder::new().with_url(url).build(&window)
+        }
+        Err(reason) => WebViewBuilder::new().with_html(error_page(&reason, &dir)).build(&window),
+    };
+    let _webview = match view {
+        Ok(webview) => webview,
+        Err(e) => {
+            eprintln!("webview: {e}");
+            stop_engine(&mut child);
+            std::process::exit(1);
+        }
+    };
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
-        if let Event::WindowEvent {
-            event: WindowEvent::CloseRequested,
-            ..
-        } = event
-        {
-            if let Some((mut child, _)) = engine.take() {
-                kill_tree(&mut child);
+        match event {
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => {
+                stop_engine(&mut child);
+                *control_flow = ControlFlow::Exit;
             }
-            *control_flow = ControlFlow::Exit;
+            Event::LoopDestroyed => stop_engine(&mut child),
+            _ => {}
         }
-        let _keep_alive = &webview;
     });
 }

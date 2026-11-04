@@ -2,15 +2,22 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { chat } from './providers.mjs';
+import { chat, getProvider } from './providers.mjs';
 import { getSecret } from './secrets.mjs';
 import { config } from './store.mjs';
-import { MASTER_PROMPT, PLAN_PROMPT, BUILD_PROMPT, REPAIR_PROMPT, dossierForPrompt } from './prompt.mjs';
+import { MASTER_PROMPT, PLAN_PROMPT, BUILD_PROMPT, REPAIR_PROMPT, JUDGE_PROMPT, dossierForPrompt, reapGuidance } from './prompt.mjs';
 import { safeJoin, writeText, ensureDir, truncate, slugify } from './util.mjs';
 
 const ALLOWED_EXT = new Set([
   '.html', '.htm', '.css', '.js', '.mjs', '.json', '.svg', '.md', '.txt', '.csv', '.webmanifest', '.ico',
 ]);
+
+const LEAN_PROMPT = `You rebuild a website as static files from captured evidence.
+Return files only in this format, one block per file:
+===FILE: path===
+<complete file contents>
+===END===
+Rules: vanilla HTML, CSS and JavaScript only, no frameworks, no CDN links, no external fonts or images. index.html must open from disk with relative paths. Emit every file you reference. Use the dossier's palette, typefaces, section order, headings and navigation labels. The dossier also carries a measured design system (type scale, weights, spacing, radii, container widths, breakpoints, grid templates) and a page outline; declare those exact values as :root tokens and match the outline section for section, instead of inventing a scale. Write real copy in the same voice as the reference, never lorem ipsum, TODO or placeholder text. One h1, semantic header/nav/main/footer, visible focus styles, responsive at 360px, prefers-reduced-motion honoured. Draw marks as inline SVG. Never copy a brand name, wordmark or marketing sentence.`;
 
 export function modelReady() {
   const c = config();
@@ -42,6 +49,20 @@ async function modelChat(messages, { maxTokens = 8192, temperature = 0.45, signa
   });
 }
 
+async function chatWithRetry(messages, opts, { label = 'model', log = () => {}, attempts = 3 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await modelChat(messages, opts);
+    } catch (e) {
+      const wait = /retry after (\d+)s/i.exec(e.message || '');
+      if (!wait || attempt >= attempts || (opts && opts.signal && opts.signal.aborted)) throw e;
+      const ms = Math.min(90, Number(wait[1]) + 3) * 1000;
+      log('dim', `${label}: provider rate limit, waiting ${Math.round(ms / 1000)}s before retrying`);
+      await new Promise((resolve) => setTimeout(resolve, ms));
+    }
+  }
+}
+
 export async function makePlan({ dossierJson, kind, brief, log = () => {}, signal }) {
   if (!modelReady()) {
     log('warn', 'No model selected — writing the plan from the dossier with the offline builder.');
@@ -50,9 +71,9 @@ export async function makePlan({ dossierJson, kind, brief, log = () => {}, signa
   const evidence = dossierForPrompt(dossierJson);
   log('info', `Planning with ${modelLabel()}…`);
   try {
-    const { text } = await modelChat(
+    const { text } = await chatWithRetry(
       [
-        { role: 'system', content: MASTER_PROMPT },
+        { role: 'system', content: `${MASTER_PROMPT}\n\n${reapGuidance(kind)}` },
         {
           role: 'user',
           content: `${PLAN_PROMPT}\n\nTARGET KIND: ${kind}\nUSER BRIEF: ${
@@ -60,7 +81,8 @@ export async function makePlan({ dossierJson, kind, brief, log = () => {}, signa
           }\n\nRECON DOSSIER\n${evidence}`,
         },
       ],
-      { maxTokens: 3000, temperature: 0.4, signal }
+      { maxTokens: 3000, temperature: 0.4, signal },
+      { label: 'plan', log }
     );
     if (!text || text.length < 120) throw new Error('the model returned an empty plan');
     return text.trim();
@@ -140,6 +162,16 @@ function parseFiles(text) {
   return out;
 }
 
+function looksComplete(file) {
+  const body = String(file.content || '').trim();
+  if (/\.html?$/i.test(file.path)) return /<\/html>\s*$/i.test(body);
+  if (/\.css$/i.test(file.path)) {
+    return (body.match(/\{/g) || []).length === (body.match(/\}/g) || []).length;
+  }
+  if (/\.m?js$/i.test(file.path)) return /[;})]\s*$/.test(body);
+  return true;
+}
+
 function sanitizeFiles(files, log) {
   const clean = [];
   const seen = new Set();
@@ -166,52 +198,151 @@ function sanitizeFiles(files, log) {
   return clean;
 }
 
+function localRefs(html) {
+  const out = new Set();
+  for (const m of String(html).matchAll(/(?:src|href)=["']([^"']+)["']/gi)) {
+    const ref = m[1];
+    if (/^(https?:|mailto:|tel:|#|data:|\/\/)/i.test(ref)) continue;
+    const clean = ref.split('?')[0].split('#')[0].trim();
+    if (/\.(css|js|mjs)$/i.test(clean)) out.add(clean);
+  }
+  return [...out];
+}
+
 export async function runBuild({ plan, dossierJson, kind, brief, dir, log = () => {}, signal }) {
   ensureDir(dir);
-  const evidence = dossierForPrompt(dossierJson, 40000);
 
   if (!modelReady()) {
     log('info', 'Building the free scaffold from the dossier (no model calls).');
     const files = scaffoldFiles(dossierJson, { kind, brief });
     writeFiles(dir, files, log);
+    files.scaffold = true;
     return files;
   }
 
   log('info', `Generating files with ${modelLabel()}…`);
-  let text = '';
-  try {
-    text = (
-      await modelChat(
-        [
-          { role: 'system', content: MASTER_PROMPT },
-          {
-            role: 'user',
-            content: `${BUILD_PROMPT}\n\nTARGET KIND: ${kind}\nUSER BRIEF: ${
-              brief || '(none)'
-            }\n\nAPPROVED PLAN\n${truncate(plan, 14000)}\n\nRECON DOSSIER\n${evidence}`,
-          },
-        ],
-        { maxTokens: 16000, temperature: 0.35, signal }
-      )
-    ).text;
-  } catch (e) {
-    log('warn', `${modelLabel()} unavailable (${e.message}) — building the dossier scaffold instead.`);
+  const written = new Map();
+  const provider = getProvider(config().provider.id || '');
+  const lean = provider.group === 'free' || !!provider.local || provider.keyRequired === false;
+
+  const call = async ({ label, tokens, evidenceChars, planChars, extra = '', note = '', compact = lean }) => {
+    const dossierText = dossierForPrompt(dossierJson, evidenceChars);
+    const user = compact
+      ? `${note}\n\nAPPROVED PLAN\n${truncate(plan, planChars)}\n\nRECON DOSSIER\n${dossierText}${extra}`
+      : `${BUILD_PROMPT}${note}\n\nTARGET KIND: ${kind}\nUSER BRIEF: ${
+          brief || '(none)'
+        }\n\nAPPROVED PLAN\n${truncate(plan, planChars)}\n\nRECON DOSSIER\n${dossierText}${extra}`;
+    const guide = reapGuidance(kind);
+    const messages = [
+      { role: 'system', content: compact ? `${LEAN_PROMPT}\n\n${guide}` : `${MASTER_PROMPT}\n\n${guide}` },
+      { role: 'user', content: user },
+    ];
+    try {
+      const { text } = await chatWithRetry(
+        messages,
+        { maxTokens: tokens, temperature: 0.35, signal },
+        { label, log }
+      );
+      const parsed = sanitizeFiles(parseFiles(text), log);
+      const files = parsed.filter(looksComplete);
+      if (!parsed.length) log('warn', `${label}: ${modelLabel()} answered without file blocks`);
+      else if (files.length < parsed.length) {
+        log('warn', `${label}: the answer was cut off before ${parsed.length - files.length} file(s) finished`);
+      }
+      return files;
+    } catch (e) {
+      log('warn', `${label}: ${e.message}`);
+      return [];
+    }
+  };
+
+  const indexNote =
+    'Emit exactly one file: index.html, complete. Real copy from the dossier: headings, navigation labels and section order. No stylesheet, no script, no README.';
+
+  if (!lean) {
+    for (const f of await call({ label: 'build', tokens: 16000, evidenceChars: 16000, planChars: 8000 })) {
+      written.set(f.path, f);
+    }
+    if (!written.has('index.html')) {
+      log('info', 'Retrying with a single-file request for index.html…');
+      for (const f of await call({
+        label: 'index.html',
+        tokens: 9000,
+        evidenceChars: 12000,
+        planChars: 6000,
+        compact: false,
+        note: '\n\nSTAGE 1: return exactly one block, for index.html. Do not emit a stylesheet, script or README.',
+      })) {
+        written.set(f.path, f);
+      }
+    }
+  }
+
+  if (!written.has('index.html')) {
+    log('info', 'Asking for index.html on its own with a short prompt…');
+    for (const f of await call({
+      label: 'index.html',
+      tokens: 8000,
+      evidenceChars: 6000,
+      planChars: 2500,
+      note: indexNote,
+    })) {
+      written.set(f.path, f);
+    }
+  }
+
+  if (!written.has('index.html')) {
+    log('info', 'Retrying index.html with a shorter brief…');
+    for (const f of await call({
+      label: 'index.html',
+      tokens: 8000,
+      evidenceChars: 4000,
+      planChars: 1500,
+      note: `${indexNote} Keep the whole document under 6 KB: header, hero, one content section, footer.`,
+    })) {
+      written.set(f.path, f);
+    }
+  }
+
+  if (!written.has('index.html')) {
+    log('warn', `${modelLabel()} did not return index.html — building the dossier scaffold instead.`);
     const fallback = scaffoldFiles(dossierJson, { kind, brief });
     writeFiles(dir, fallback, log);
+    fallback.scaffold = true;
     return fallback;
   }
 
-  let files = sanitizeFiles(parseFiles(text), log);
-  if (!files.length) {
-    log('warn', 'The model did not return the file format — falling back to the dossier scaffold.');
-    files = scaffoldFiles(dossierJson, { kind, brief });
+  const html = written.get('index.html').content;
+  for (const ref of localRefs(html).filter((r) => !written.has(r)).slice(0, 4)) {
+    const css = /\.css$/i.test(ref);
+    log('info', `Filling in ${ref} with a second pass…`);
+    const got = await call({
+      label: ref,
+      tokens: css ? 8000 : 5000,
+      evidenceChars: 4000,
+      planChars: 2000,
+      note: `Return exactly one file: ${ref}, complete. Match the markup below exactly: same class names, ids and structure. No other files.`,
+      extra: `\n\nCURRENT index.html\n${truncate(html, 9000)}\n\nALREADY WRITTEN\n${[
+        ...written.keys(),
+      ].join(', ')}`,
+    });
+    const match = got.find((f) => f.path === ref);
+    if (match) written.set(ref, match);
+    else log('warn', `${ref} still missing — the healer will generate it from the recon palette`);
   }
+
+  const files = [...written.values()];
   writeFiles(dir, files, log);
   return files;
 }
 
-export async function repairBuild({ dir, problems, log = () => {}, signal }) {
+export async function repairBuild({ dir, problems, dossier, kind, log = () => {}, signal }) {
   if (!modelReady()) return false;
+  const d = dossier || {};
+  const spec = [
+    d.designLines?.length ? `\nMEASURED DESIGN (reuse these numbers):\n${d.designLines.map((l) => `- ${l}`).join('\n')}` : '',
+    d.outline?.length ? `\nPAGE OUTLINE (same order, same count):\n${d.outline.map((o) => o.line).join('\n')}` : '',
+  ].join('');
   const existing = [];
   for (const rel of ['index.html', 'styles.css', 'app.js']) {
     try {
@@ -223,8 +354,8 @@ export async function repairBuild({ dir, problems, log = () => {}, signal }) {
     text = (
       await modelChat(
         [
-          { role: 'system', content: MASTER_PROMPT },
-          { role: 'user', content: `${REPAIR_PROMPT}${problems.join('\n')}\n\nCURRENT FILES\n${existing.join('\n\n')}` },
+          { role: 'system', content: `${MASTER_PROMPT}\n\n${reapGuidance(kind)}` },
+          { role: 'user', content: `${REPAIR_PROMPT}${problems.join('\n')}${spec}\n\nCURRENT FILES\n${existing.join('\n\n')}` },
         ],
         { maxTokens: 12000, temperature: 0.2, signal }
       )
@@ -237,6 +368,47 @@ export async function repairBuild({ dir, problems, log = () => {}, signal }) {
   if (!files.length) return false;
   writeFiles(dir, files, log);
   return true;
+}
+
+export async function judgeBuild({ dir, dossier, kind, log = () => {}, signal }) {
+  if (!modelReady()) return null;
+  const d = dossier || {};
+  const existing = [];
+  for (const rel of ['index.html', 'styles.css', 'app.js']) {
+    try {
+      existing.push(`--- ${rel} ---\n${fs.readFileSync(path.join(dir, rel), 'utf8').slice(0, 14000)}`);
+    } catch {}
+  }
+  if (!existing.length) return null;
+  try {
+    const { text } = await chatWithRetry(
+      [
+        { role: 'system', content: JUDGE_PROMPT },
+        {
+          role: 'user',
+          content: `TARGET KIND: ${kind}\n\nMEASUREMENTS FROM THE REFERENCE\n${dossierForPrompt(
+            d
+          )}\n\nFILES THE BUILD PRODUCED\n${existing.join('\n\n')}`,
+        },
+      ],
+      { maxTokens: 900, temperature: 0.1, signal },
+      { label: 'judge', log, attempts: 2 }
+    );
+    const match = /\{[\s\S]*\}/.exec(text || '');
+    if (!match) {
+      log('dim', 'judge: no JSON in the answer');
+      return null;
+    }
+    const parsed = JSON.parse(match[0]);
+    const score = Number(parsed.score);
+    const gaps = (parsed.gaps || []).map((g) => String(g).trim()).filter((g) => g.length > 3).slice(0, 10);
+    if (!Number.isFinite(score) && !gaps.length) return null;
+    log('dim', `judge: ${Number.isFinite(score) ? `${Math.round(score)}/100` : 'no score'} · ${gaps.length} gap(s)`);
+    return { score: Number.isFinite(score) ? Math.min(100, Math.max(0, Math.round(score))) : null, gaps };
+  } catch (e) {
+    log('warn', `judge skipped — ${e.message}`);
+    return null;
+  }
 }
 
 function writeFiles(dir, files, log) {
@@ -306,6 +478,48 @@ export function verifyBuild(dir, opts = {}) {
     notes.push(
       `palette: ${hits.length}/${palette.length} recon colours used${hits.length ? ` (${hits.slice(0, 4).join(' ')})` : ' — decide if the result still reads as the reference'}`
     );
+  }
+
+  const design = (dossier && dossier.design) || null;
+  if (design && html.length > 4000 && opts.fidelity !== false) {
+    const pxInBuild = new Set(
+      [...cssText.matchAll(/(-?\d+(?:\.\d+)?)(px|rem|em)/gi)]
+        .map((m) => Math.round((m[2].toLowerCase() === 'px' ? Number(m[1]) : Number(m[1]) * 16) * 10) / 10)
+        .filter((n) => Number.isFinite(n) && n >= 0)
+    );
+    const measured = (value) => [...pxInBuild].some((n) => Math.abs(n - value) <= 1);
+    const scale = (design.typeScale || []).map((v) => v.px).filter((px) => px >= 10 && px <= 200);
+    if (scale.length >= 3) {
+      const matched = scale.filter(measured);
+      if (!matched.length) {
+        problems.push(
+          `no measured type size from the reference (${scale.slice(0, 6).join(', ')}px) appears in the stylesheet — the type ramp is invented`
+        );
+      } else notes.push(`type scale: ${matched.length}/${scale.length} measured sizes present (${matched.slice(0, 6).join(', ')})`);
+    }
+    const containers = (design.containers || []).map((v) => v.px).filter((px) => px >= 600);
+    if (containers.length) {
+      const hit = containers.filter(measured);
+      if (!hit.length) problems.push(`no reference container width (${containers.slice(0, 3).join(', ')}px) appears in the stylesheet`);
+      else notes.push(`layout: ${hit[0]}px container matches the reference`);
+    }
+    const outlineCount = Array.isArray(dossier.outline) ? dossier.outline.length : 0;
+    if (outlineCount >= 3) {
+      const built = (html.match(/<section\b/gi) || []).length + (html.match(/<article\b/gi) || []).length;
+      if (built < Math.ceil(outlineCount / 2)) {
+        problems.push(`the reference has ${outlineCount} sections and this build has ${built} — most of the page is missing`);
+      } else notes.push(`sections: ${built} built · ${outlineCount} in the reference`);
+    }
+    const labels = ((dossier.primary && dossier.primary.nav) || [])
+      .map((n) => String(n).toLowerCase().trim())
+      .filter((n) => n.length > 1);
+    if (labels.length >= 3) {
+      const low = html.toLowerCase();
+      const used = labels.filter((n) => low.includes(n));
+      if (used.length < Math.ceil(labels.length / 2)) {
+        problems.push(`only ${used.length}/${labels.length} reference navigation labels appear in the markup`);
+      } else notes.push(`nav: ${used.length}/${labels.length} reference labels present`);
+    }
   }
 
   const fonts = ((dossier && dossier.fonts) || [])
@@ -404,6 +618,105 @@ function fallbackJs() {
   }
 })();
 `;
+}
+
+export function captureFiles(dossierJson = {}, { dir, log = () => {} } = {}) {
+  const cap = dossierJson.capture;
+  if (!cap || !cap.html) return null;
+  const outDir = path.resolve(dir, '..');
+  const resolveFile = (file) => (path.isAbsolute(file) ? file : path.resolve(outDir, file));
+  const htmlPath = resolveFile(cap.html);
+  let html;
+  try {
+    html = fs.readFileSync(htmlPath, 'utf8');
+  } catch {
+    return null;
+  }
+  if (html.length < 2000 || !/<html[\s>]/i.test(html)) return null;
+  const base = cap.base || dossierJson.url || '';
+  let root = '';
+  try {
+    root = new URL(base).origin;
+  } catch {
+    root = '';
+  }
+  const abs = (value) => {
+    const v = String(value || '').trim();
+    if (!v) return v;
+    if (/^(https?:|data:|mailto:|tel:|#|javascript:|\/\/)/i.test(v)) return v;
+    try {
+      return new URL(v, base).toString();
+    } catch {
+      return v;
+    }
+  };
+  const cssAbs = (css, sheetUrl) => {
+    const scope = sheetUrl || base;
+    return String(css).replace(/url\((['"]?)([^'")]+)\1\)/gi, (m, q, value) => {
+      const v = value.trim();
+      if (!v || /^(data:|https?:|\/\/|#)/i.test(v)) return m;
+      try {
+        return `url(${q}${new URL(v, scope).toString()}${q})`;
+      } catch {
+        return m;
+      }
+    });
+  };
+  const known = new Map();
+  for (const s of cap.sheets || []) {
+    try {
+      known.set(new URL(s.url).toString(), s);
+    } catch {}
+  }
+
+  html = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  html = html.replace(/<script\b[^>]*>/gi, '');
+  html = html.replace(/<link\b[^>]*>/gi, (tag) => {
+    const rel = ((/rel\s*=\s*"([^"]*)"/i.exec(tag) || [])[1] || '').toLowerCase();
+    if (/preload|prefetch|preconnect|dns-prefetch|manifest|alternate/.test(rel)) return '';
+    return tag;
+  });
+  html = html.replace(/(\s(?:srcset|data-srcset))="([^"]*)"/gi, (m, attr, value) => {
+    const parts = value.split(',').map((part) => {
+      const bits = part.trim().split(/\s+/);
+      if (bits[0]) bits[0] = abs(bits[0]);
+      return bits.join(' ');
+    });
+    return `${attr}="${parts.join(', ')}"`;
+  });
+  html = html.replace(/(\s(?:src|href|poster|action|data-src)=")([^"]*)(")/gi, (m, pre, value, post) => `${pre}${abs(value)}${post}`);
+  if (root) html = html.replace(/url\((['"]?)(\/[^'")]+)\1\)/gi, (m, q, p) => `url(${q}${root}${p}${q})`);
+
+  let inlined = 0;
+  html = html.replace(/<link\b[^>]*>/gi, (tag) => {
+    const rel = ((/rel\s*=\s*"([^"]*)"/i.exec(tag) || [])[1] || '').toLowerCase();
+    if (!/stylesheet/.test(rel)) return tag;
+    const href = ((/href\s*=\s*"([^"]*)"/i.exec(tag) || [])[1] || '').trim();
+    if (!href) return tag;
+    const record =
+      known.get(href) ||
+      [...known.values()].find((s) => {
+        try {
+          return new URL(s.url).pathname === new URL(href).pathname;
+        } catch {
+          return false;
+        }
+      });
+    if (!record) return tag;
+    let css = '';
+    try {
+      css = fs.readFileSync(resolveFile(record.file), 'utf8');
+    } catch {
+      return tag;
+    }
+    inlined += 1;
+    return `<style data-source="${escapeHtml(record.url)}">\n${cssAbs(css, record.url)}\n</style>`;
+  });
+
+  fs.mkdirSync(dir, { recursive: true });
+  writeText(path.join(dir, 'index.html'), html);
+  log('ok', `exact capture · ${path.basename(htmlPath)} · ${(html.length / 1024).toFixed(0)} KB · ${inlined} stylesheet(s) inlined`);
+  return [{ path: 'index.html', content: html }];
 }
 
 export function ensureLocalAssets(dir, dossierJson = {}, log = () => {}) {
@@ -514,7 +827,28 @@ function pickName(d, brief) {
 
 export function scaffoldFiles(d, { kind = 'site', brief = '' } = {}) {
   const t = deriveTheme(d.palette || []);
-  const name = pickName(d, brief);
+  const hostName = (() => {
+    try {
+      const label = new URL(d.url).hostname.replace(/^www\./, '').split('.')[0] || '';
+      return label ? label[0].toUpperCase() + label.slice(1) : '';
+    } catch {
+      return '';
+    }
+  })();
+  const name = hostName || pickName(d, brief);
+  const cleanCopy = (text) => {
+    const s = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!s || s.length < 10 || s.length > 240) return '';
+    if (/\$\{|\{\{|}}|<%|\bundefined\b|\bnull\b|NaN/.test(s)) return '';
+    return s;
+  };
+  const cleanLabel = (text) => {
+    const s = String(text || '').split(' – ')[0].replace(/\s+/g, ' ').trim();
+    if (!s || s.length < 3 || s.length > 44) return '';
+    if (/^[\d.,\sKMB+]+$/i.test(s)) return '';
+    if (/\$\{|\{\{|}}/.test(s)) return '';
+    return s;
+  };
   const nav = (d.primary?.nav || []).slice(0, 5);
   const navItems = nav.length ? nav : ['Overview', 'Features', 'Pricing', 'Docs'];
   const headings = (d.primary?.headings || []).map((h) => h.replace(/^#+\s*/, ''));
@@ -530,9 +864,106 @@ export function scaffoldFiles(d, { kind = 'site', brief = '' } = {}) {
     'Accessible by default',
     'Runs from disk',
   ]).slice(0, 6);
-  const shots = (d.shots || []).filter((s) => s.ok && s.file);
-  const pages = (d.pages || []).slice(0, 6);
   const fontStack = (d.fonts || [])[0]?.family;
+  const sectionHeading = headings[1] && headings[1].length < 64 ? headings[1] : 'What it does';
+  const detailHeading = headings[2] && headings[2].length < 64 ? headings[2] : sectionHeading;
+  const labels = (d.primary?.buttons || []).map((b) => String(b).trim()).filter((b) => b && b.length < 24);
+  const primaryAction = labels[0] || 'Get started';
+  const secondaryAction = labels[1] || 'Learn more';
+
+  const design = d.design || {};
+  const nums = (list) => (list || []).map((v) => Number(v.px)).filter((n) => Number.isFinite(n));
+  const pick = (list, min, max, fallback) => nums(list).filter((n) => n >= min && n <= max).sort((a, b) => b - a)[0] || fallback;
+  const wrap = pick(design.containers, 900, 1920, 1200);
+  const h1Size = pick(design.typeScale, 36, 120, 56);
+  const h2Size = pick(design.typeScale, 20, 44, 32);
+  const pad = pick(design.space, 40, 160, 72);
+  const radius = pick(design.radii, 4, 24, 10);
+  const cols = Number(/repeat\((\d+)/.exec(((design.grids || [])[0] || {}).value || '')?.[1]) || 3;
+  const hexLum = (hex) => {
+    const n = parseInt(String(hex).replace('#', '').slice(0, 6), 16);
+    if (!Number.isFinite(n)) return 0.5;
+    return ((0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)) / 255);
+  };
+  const bg = (design.colors?.background || [])[0]?.hex || t.canvas;
+  const dark = hexLum(bg) < 0.5;
+  const inkList = (design.colors?.ink || []).map((c) => c.hex).filter((h) => h !== bg);
+  const text = inkList.slice().sort((a, b) => (dark ? hexLum(b) - hexLum(a) : hexLum(a) - hexLum(b)))[0] || t.text;
+  const border = (design.colors?.border || []).map((c) => c.hex).find((h) => h !== bg && h !== text) || t.border;
+  const surface = design.colors?.background?.[1]?.hex || t.surface;
+
+  const outline = Array.isArray(d.outline) ? d.outline : [];
+  const heroEntry = outline.find((o) => o.heading && o.heading === hero) || outline.find((o) => o.heading && /create|build|start|welcome/i.test(o.heading)) || null;
+  const candidates = outline.filter(
+    (o) =>
+      o !== heroEntry &&
+      o.tag !== 'header' &&
+      o.tag !== 'footer' &&
+      (o.heading || (o.links || []).length || (o.buttons || []).length) &&
+      String(o.heading || '').toLowerCase() !== String(hero || '').toLowerCase()
+  );
+  const ctaEntry = [...candidates].reverse().find((o) => (o.buttons || []).length && (o.links || []).length < 3) || null;
+  const rest = candidates.filter((o) => o !== ctaEntry);
+  const ctaHeading = ctaEntry?.heading || primaryAction;
+
+  const heroCopy = cleanCopy(heroEntry?.paragraphs?.[0]) || cleanCopy(sub);
+  const heroHtml = `    <section class="hero" id="top">
+      <div class="wrap">
+        <h1>${escapeHtml(heroEntry?.heading || hero)}</h1>
+        ${heroCopy ? `<p class="lede">${escapeHtml(heroCopy)}</p>` : ''}
+        <div class="hero-actions">
+          <a class="btn" href="#start">${escapeHtml(heroEntry?.buttons?.[0] || primaryAction)}</a>
+          <a class="btn ghost" href="#s2">${escapeHtml(heroEntry?.buttons?.[1] || secondaryAction)}</a>
+        </div>
+      </div>
+    </section>`;
+
+  const sectionsHtml = rest
+    .map((entry, i) => {
+      const cards = [...new Set((entry.links || []).map(cleanLabel).filter(Boolean))].slice(0, 8);
+      const btns = [...new Set((entry.buttons || []).map(cleanLabel).filter(Boolean))].slice(0, 2);
+      const copy = cleanCopy(entry.paragraphs?.[0]);
+      return `    <section class="sec" id="s${i + 2}">
+      <div class="wrap">
+        ${entry.heading ? `<h2>${escapeHtml(entry.heading)}</h2>` : ''}
+        ${copy ? `<p class="lede">${escapeHtml(copy)}</p>` : ''}
+        ${
+          cards.length
+            ? `<div class="grid">\n${cards
+                .map(
+                  (c, k) =>
+                    `          <article class="card" tabindex="0"><span class="num">0${k + 1}</span><h3>${escapeHtml(c)}</h3></article>`
+                )
+                .join('\n')}\n        </div>`
+            : ''
+        }
+        ${
+          btns.length
+            ? `<div class="hero-actions">${btns
+                .map((b, k) => `<a class="btn${k ? ' ghost' : ''}" href="#start">${escapeHtml(b)}</a>`)
+                .join('')}</div>`
+            : ''
+        }
+      </div>
+    </section>`;
+    })
+    .join('\n\n');
+
+  const mainHtml = `${heroHtml}\n\n${sectionsHtml}\n\n    <section class="sec cta" id="start">
+      <div class="wrap">
+        <h2>${escapeHtml(ctaHeading)}</h2>
+        ${cleanCopy(ctaEntry?.paragraphs?.[0]) || cleanCopy(sub) ? `<p class="lede">${escapeHtml(cleanCopy(ctaEntry?.paragraphs?.[0]) || cleanCopy(sub))}</p>` : ''}
+        <form class="signup" id="signup" novalidate>
+          <label for="email">Email</label>
+          <div class="field">
+            <input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" required />
+            <button class="btn" type="submit">${escapeHtml(primaryAction)}</button>
+          </div>
+          <p class="error" id="email-error" role="alert" hidden></p>
+          <p class="sent" id="sent" hidden>Saved locally — this demo has no backend.</p>
+        </form>
+      </div>
+    </section>`;
 
   const navHtml = navItems.map((n) => `<a href="#${n.toLowerCase().replace(/[^a-z0-9]+/g, '-')}">${n}</a>`).join('\n        ');
   const cardsHtml = cards
@@ -540,13 +971,9 @@ export function scaffoldFiles(d, { kind = 'site', brief = '' } = {}) {
       (c, i) => `        <article class="card" tabindex="0">
           <span class="num">0${i + 1}</span>
           <h3>${escapeHtml(c)}</h3>
-          <p>Built from the reference's ${i % 2 ? 'layout rhythm and section order' : 'extracted palette and type scale'}.</p>
         </article>`
     )
     .join('\n');
-  const evidenceHtml = pages.length
-    ? pages.map((p) => `<li><span>${escapeHtml(new URL(p.url).pathname || '/')}</span><em>${escapeHtml(p.title || '')}</em></li>`).join('\n          ')
-    : '<li><span>no secondary pages captured</span><em>single-page reference</em></li>';
 
   const index = `<!doctype html>
 <html lang="en">
@@ -580,94 +1007,13 @@ export function scaffoldFiles(d, { kind = 'site', brief = '' } = {}) {
   </header>
 
   <main id="main">
-    <section class="hero" id="top">
-      <div class="wrap">
-        <p class="eyebrow">${escapeHtml(kind.toUpperCase())} RECONSTRUCTION</p>
-        <h1>${escapeHtml(hero)}</h1>
-        <p class="lede">${escapeHtml(sub)}</p>
-        <div class="hero-actions">
-          <a class="btn" href="#start">Start now</a>
-          <a class="btn ghost" href="#evidence">See the evidence</a>
-        </div>
-      </div>
-    </section>
-
-    <section class="features" id="features">
-      <div class="wrap">
-        <h2>What the reference does, rebuilt</h2>
-        <div class="grid">
-${cardsHtml}
-        </div>
-      </div>
-    </section>
-
-    <section class="detail" id="overview">
-      <div class="wrap detail-inner">
-        <div class="panel" aria-hidden="true">
-          <div class="panel-bar"><i></i><i></i><i></i></div>
-          <div class="panel-body">
-            <div class="line w70"></div>
-            <div class="line w90"></div>
-            <div class="line w60"></div>
-            <div class="chip-row"><span></span><span></span><span></span></div>
-          </div>
-        </div>
-        <div>
-          <h2>A layout you can actually work in</h2>
-          <p>The structure above came from the reference itself: its section order, its navigation labels, its hierarchy. What you are reading was rebuilt as original markup and copy, so you can ship it.</p>
-          <ul class="ticks">
-            <li>Semantic landmarks and a single h1</li>
-            <li>Keyboard reachable everywhere, visible focus</li>
-            <li>Two themes, honouring your system preference</li>
-            <li>No frameworks, no build step, no network calls</li>
-          </ul>
-        </div>
-      </div>
-    </section>
-
-    <section class="evidence" id="evidence">
-      <div class="wrap">
-        <h2>Evidence captured</h2>
-        <p class="lede">${(d.shots || []).length} screenshot(s), ${(d.pages || []).length} page(s), ${
-          (d.webIntel || []).length
-        } research source(s).</p>
-        <ul class="pages">
-          ${evidenceHtml}
-        </ul>
-${
-  shots.length
-    ? `        <div class="shots">
-          ${shots
-            .slice(0, 3)
-            .map((s) => `<figure><img src="../${s.file}" alt="Reference screenshot: ${escapeHtml(s.label)}" loading="lazy" /><figcaption>${escapeHtml(s.label)}</figcaption></figure>`)
-            .join('\n          ')}
-        </div>`
-    : ''
-}
-      </div>
-    </section>
-
-    <section class="cta" id="start">
-      <div class="wrap">
-        <h2>Ready when you are</h2>
-        <p>Everything here is static. Open it from disk, or drop it on any host.</p>
-        <form class="signup" id="signup" novalidate>
-          <label for="email">Email</label>
-          <div class="field">
-            <input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" required />
-            <button class="btn" type="submit">Join</button>
-          </div>
-          <p class="error" id="email-error" role="alert" hidden></p>
-          <p class="sent" id="sent" hidden>Saved locally — this demo has no backend.</p>
-        </form>
-      </div>
-    </section>
+${mainHtml}
   </main>
 
   <footer class="site-foot">
     <div class="wrap foot-inner">
-      <p>${escapeHtml(name)} — an original reconstruction. Reference structure only; no brand assets were copied.</p>
-      <p class="fine">Generated by PiratesShip</p>
+      <p>${escapeHtml(name)}</p>
+      <p class="fine">${escapeHtml(d.url ? new URL(d.url).host : 'Built from captured evidence')}</p>
     </div>
   </footer>
   <script src="app.js"></script>
@@ -677,21 +1023,27 @@ ${
 
   const css = `:root {
   color-scheme: dark;
-  --canvas: ${t.canvas};
-  --surface: ${t.surface};
+  --canvas: ${bg};
+  --surface: ${surface};
   --elevated: ${t.elevated};
-  --border: ${t.border};
-  --text: ${t.text};
+  --border: ${border};
+  --text: ${text};
   --dim: ${t.dim};
   --accent: ${t.accent};
   --accent-ink: ${t.accentInk};
-  --r-sm: 8px;
-  --r-md: 14px;
-  --r-lg: 22px;
+  --r-sm: ${Math.max(4, Math.min(radius, 12))}px;
+  --r-md: ${radius}px;
+  --r-lg: ${Math.round(radius * 1.6)}px;
   --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 24px;
   --s-6: 32px; --s-7: 48px; --s-8: 64px; --s-9: 96px;
   --font: ${fontStack ? `"${fontStack}", ` : ''}ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --ease: cubic-bezier(.2,.7,.3,1);
+  --wrap: ${wrap}px;
+  --h1: ${h1Size}px;
+  --h2: ${h2Size}px;
+  --pad: ${pad}px;
+  --radius: ${radius}px;
+  --cols: ${cols};
 }
 [data-theme="light"] {
   color-scheme: light;
@@ -710,13 +1062,13 @@ body {
   font-family: var(--font); font-size: 16px; line-height: 1.6;
   -webkit-font-smoothing: antialiased;
 }
-.wrap { width: min(1200px, calc(100% - 48px)); margin-inline: auto; }
+.wrap { width: min(var(--wrap), calc(100% - 48px)); margin-inline: auto; }
 a { color: inherit; text-decoration: none; }
 .skip { position: absolute; left: -9999px; }
 .skip:focus { left: 16px; top: 16px; background: var(--accent); color: var(--accent-ink); padding: 8px 14px; border-radius: var(--r-sm); z-index: 9; }
 h1, h2, h3 { line-height: 1.1; letter-spacing: -0.02em; margin: 0 0 var(--s-3); }
-h1 { font-size: clamp(2.25rem, 5vw, 3.75rem); }
-h2 { font-size: clamp(1.5rem, 2.6vw, 2rem); }
+h1 { font-size: clamp(2rem, 4.4vw, var(--h1)); }
+h2 { font-size: clamp(1.4rem, 2.2vw, var(--h2)); }
 h3 { font-size: 1.05rem; }
 p { margin: 0 0 var(--s-4); color: var(--dim); }
 
@@ -749,13 +1101,16 @@ nav a:hover, nav a:focus-visible { color: var(--text); border-bottom-color: var(
 .ghost#theme { min-height: 40px; width: 40px; padding: 0; background: transparent; color: var(--dim); border: 1px solid var(--border); border-radius: var(--r-sm); cursor: pointer; }
 .burger { display: none; }
 
-.hero { padding: var(--s-9) 0 var(--s-8); border-bottom: 1px solid var(--border); }
+.hero { padding: var(--pad) 0 calc(var(--pad) * 0.55); border-bottom: 1px solid var(--border); }
+.sec { padding: calc(var(--pad) * 0.85) 0; border-bottom: 1px solid var(--border); }
+.sec:last-of-type { border-bottom: 0; }
+.sec .grid { margin-top: var(--s-5); }
 .eyebrow { font-size: 0.72rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: var(--s-3); }
 .lede { font-size: 1.06rem; max-width: 58ch; }
 .hero-actions { display: flex; gap: var(--s-3); flex-wrap: wrap; margin-top: var(--s-5); }
 
 .features { padding: var(--s-8) 0; }
-.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-4); margin-top: var(--s-5); }
+.grid { display: grid; grid-template-columns: repeat(var(--cols), 1fr); gap: var(--s-4); margin-top: var(--s-5); }
 .card {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--r-md); padding: var(--s-5);
@@ -871,21 +1226,23 @@ const form = document.getElementById('signup');
 const email = document.getElementById('email');
 const error = document.getElementById('email-error');
 const sent = document.getElementById('sent');
-form.addEventListener('submit', (e) => {
-  e.preventDefault();
-  const value = email.value.trim();
-  const valid = /^[^@\\s]+@[^@\\s]+\\.[^@\\s]{2,}$/.test(value);
-  error.hidden = valid;
-  sent.hidden = !valid;
-  email.setAttribute('aria-invalid', String(!valid));
-  if (valid) {
-    localStorage.setItem('reconstruction-email', value);
-    form.reset();
-  } else {
-    error.textContent = 'Enter a valid email address.';
-    email.focus();
-  }
-});
+if (form && email && error && sent) {
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const value = email.value.trim();
+    const valid = /^[^@\\s]+@[^@\\s]+\\.[^@\\s]{2,}$/.test(value);
+    error.hidden = valid;
+    sent.hidden = !valid;
+    email.setAttribute('aria-invalid', String(!valid));
+    if (valid) {
+      localStorage.setItem('reconstruction-email', value);
+      form.reset();
+    } else {
+      error.textContent = 'Enter a valid email address.';
+      email.focus();
+    }
+  });
+}
 
 const head = document.querySelector('.site-head');
 let last = 0;

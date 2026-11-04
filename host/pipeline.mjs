@@ -2,12 +2,15 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { recon, normalizeUrl } from './recon.mjs';
+import { scoreBuild, mergeScores } from './score.mjs';
 import {
   makePlan,
   runBuild,
   verifyBuild,
   repairBuild,
   ensureLocalAssets,
+  captureFiles,
+  judgeBuild,
   modelReady,
   modelLabel,
 } from './build.mjs';
@@ -101,42 +104,90 @@ export async function runPipeline(job, { prompt, kind = 'site', url = null, auto
 
     phase(job, 'build', 'Building');
     const siteDir = path.join(dir, 'site');
-    let files = await runBuild({
-      plan,
-      dossierJson: dossier,
-      kind,
-      brief: prompt,
-      dir: siteDir,
-      log: (level, text) => log(job, level, text),
-      signal,
-    });
+    let files = null;
+    if (kind === 'site') {
+      files = captureFiles(dossier, { dir: siteDir, log: (level, text) => log(job, level, text) });
+      if (files) files.capture = true;
+    }
+    if (!files) {
+      files = await runBuild({
+        plan,
+        dossierJson: dossier,
+        kind,
+        brief: prompt,
+        dir: siteDir,
+        log: (level, text) => log(job, level, text),
+        signal,
+      });
+    }
     if (signal.aborted) throw new Error('Cancelled.');
     emit(job, 'files', { files: files.map((f) => ({ path: f.path, bytes: f.content.length })) });
 
     phase(job, 'verify', 'Verifying the build');
-    let check = verifyBuild(siteDir, { dossier });
+    const fidelity = !(files && files.scaffold);
+    let check = verifyBuild(siteDir, { dossier, fidelity });
     for (const p of check.problems) log(job, 'warn', p);
     for (const n of check.notes) log(job, 'dim', n);
 
-    if (!check.ok && modelReady() && check.problems.length) {
+    if (!check.ok && !files.capture && modelReady() && check.problems.length) {
       if (signal.aborted) throw new Error('Cancelled.');
       log(job, 'info', 'Asking the model for one repair pass…');
       const fixed = await repairBuild({
         dir: siteDir,
         problems: check.problems,
+        dossier,
+        kind,
         log: (level, text) => log(job, level, text),
         signal,
       });
       if (fixed) {
-        check = verifyBuild(siteDir, { dossier });
+        check = verifyBuild(siteDir, { dossier, fidelity });
         for (const p of check.problems) log(job, 'warn', `still: ${p}`);
       }
     }
 
     const healed = ensureLocalAssets(siteDir, dossier, (level, text) => log(job, level, text));
     if (healed.length) {
-      check = verifyBuild(siteDir, { dossier });
+      check = verifyBuild(siteDir, { dossier, fidelity });
       for (const p of check.problems) log(job, 'warn', `still: ${p}`);
+    }
+
+    let report = scoreBuild(siteDir, dossier);
+    emit(job, 'score', { score: report.score, dimensions: report.dimensions, gaps: report.gaps, round: 0 });
+    log(job, report.score >= 80 ? 'ok' : 'warn', `similarity ${report.score}/100 against the reference evidence`);
+    if (!files.capture && modelReady()) {
+      for (let round = 1; round <= 2 && report.score < 92; round++) {
+        if (signal.aborted) throw new Error('Cancelled.');
+        phase(job, 'score', `Closing the gap (${report.score}/100)`);
+        const judged = await judgeBuild({
+          dir: siteDir,
+          dossier,
+          kind,
+          log: (level, text) => log(job, level, text),
+          signal,
+        });
+        report = mergeScores(report, judged);
+        emit(job, 'score', {
+          score: report.score,
+          dimensions: report.dimensions,
+          gaps: report.gaps,
+          judged: report.judged || null,
+          round,
+        });
+        if (!report.gaps.length) break;
+        log(job, 'info', `asking for a closer pass — ${report.gaps.length} gap(s)`);
+        const closer = await repairBuild({
+          dir: siteDir,
+          problems: report.gaps,
+          dossier,
+          kind,
+          log: (level, text) => log(job, level, text),
+          signal,
+        });
+        if (!closer) break;
+        report = scoreBuild(siteDir, dossier);
+        emit(job, 'score', { score: report.score, dimensions: report.dimensions, gaps: report.gaps, round: round + 1 });
+      }
     }
 
     const index = path.join(siteDir, 'index.html');
@@ -149,13 +200,14 @@ export async function runPipeline(job, { prompt, kind = 'site', url = null, auto
       planPath: path.join(dir, 'plan.md'),
       dossierPath: path.join(dir, '_recon', 'dossier.md'),
       model: modelLabel(),
+      score: report.score,
       free: !modelReady(),
       url: `/out/${encodeURIComponent(folder)}/site/index.html`,
     };
     writeText(
       path.join(dir, 'SESSION.md'),
       `# Session ${job.id}\n\nPrompt: ${prompt}\nKind: ${kind}\nReference: ${guessUrl || 'none'}\nModel: ${result.model}\n\n` +
-        `Files: ${result.files.join(', ')}\n\n${truncate(plan, 2000)}\n`
+        `Files: ${result.files.join(', ')}\nSimilarity: ${result.score}/100\n\n${truncate(plan, 2000)}\n`
     );
     saveSession({
       id: job.id,

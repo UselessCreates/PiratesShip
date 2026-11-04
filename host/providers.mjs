@@ -40,18 +40,56 @@ export const PROVIDERS = [
   oa({ id: 'xai', name: 'xAI · Grok', baseUrl: 'https://api.x.ai/v1', models: ['grok-4', 'grok-3-mini'], keyUrl: 'https://console.x.ai' }),
   oa({ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', models: ['deepseek-chat', 'deepseek-reasoner'], keyUrl: 'https://platform.deepseek.com/api_keys' }),
   oa({ id: 'mistral', name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', models: ['mistral-large-latest', 'codestral-latest', 'mistral-small-latest'], keyUrl: 'https://console.mistral.ai/api-keys' }),
-  oa({ id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', models: ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b', 'qwen/qwen3-32b'], keyUrl: 'https://console.groq.com/keys', notes: 'Very fast, free tier.' }),
+  oa({ id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', models: ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b', 'qwen/qwen3-32b'],    keyUrl: 'https://console.groq.com/keys', dynamicModels: true, notes: 'Very fast, free tier. Refresh loads every model on the key.' }),
   oa({ id: 'together', name: 'Together AI', baseUrl: 'https://api.together.xyz/v1', models: ['meta-llama/Llama-3.3-70B-Instruct-Turbo', 'Qwen/Qwen2.5-Coder-32B-Instruct'], keyUrl: 'https://api.together.xyz/settings/api-keys' }),
   oa({ id: 'fireworks', name: 'Fireworks AI', baseUrl: 'https://api.fireworks.ai/inference/v1', models: ['accounts/fireworks/models/llama-v3p3-70b-instruct'], keyUrl: 'https://fireworks.ai/account/api-keys' }),
-  oa({ id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', models: ['deepseek/deepseek-chat-v3.1:free', 'z-ai/glm-4.5-air:free', 'anthropic/claude-sonnet-4.5'], keyUrl: 'https://openrouter.ai/keys', notes: 'One key, hundreds of models, several :free.' }),
+  oa({ id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1',    models: ['deepseek/deepseek-chat-v3.1:free', 'z-ai/glm-4.5-air:free', 'anthropic/claude-sonnet-4.5'],
+    keyUrl: 'https://openrouter.ai/keys',
+    dynamicModels: true,
+    notes: 'One key, hundreds of models. Refresh puts every zero-price model first.' }),
   oa({ id: 'perplexity', name: 'Perplexity', baseUrl: 'https://api.perplexity.ai', models: ['sonar-pro', 'sonar'], keyUrl: 'https://www.perplexity.ai/settings/api' }),
-  oa({ id: 'cerebras', name: 'Cerebras', baseUrl: 'https://api.cerebras.ai/v1', models: ['llama3.1-8b', 'qwen-3-235b-a22b-instruct-2507'], keyUrl: 'https://cloud.cerebras.ai' }),
+  oa({ id: 'cerebras', name: 'Cerebras', baseUrl: 'https://api.cerebras.ai/v1', models: ['llama3.1-8b', 'qwen-3-235b-a22b-instruct-2507'], keyUrl: 'https://cloud.cerebras.ai', dynamicModels: true, notes: 'Free tier, very fast. Refresh loads the whole catalogue.' }),
   oa({ id: 'sambanova', name: 'SambaNova', baseUrl: 'https://api.sambanova.ai/v1', models: ['Meta-Llama-3.3-70B-Instruct', 'DeepSeek-R1'], keyUrl: 'https://cloud.sambanova.ai/apis' }),
   oa({ id: 'hyperbolic', name: 'Hyperbolic', baseUrl: 'https://api.hyperbolic.xyz/v1', models: ['meta-llama/Llama-3.3-70B-Instruct'], keyUrl: 'https://app.hyperbolic.xyz/settings' }),
   oa({ id: 'deepinfra', name: 'DeepInfra', baseUrl: 'https://api.deepinfra.com/v1/openai', models: ['meta-llama/Llama-3.3-70B-Instruct', 'Qwen/Qwen2.5-Coder-32B-Instruct'], keyUrl: 'https://deepinfra.com/dash/api_keys' }),
   oa({ id: 'novita', name: 'Novita AI', baseUrl: 'https://api.novita.ai/v3/openai', models: ['deepseek/deepseek-v3', 'meta-llama/llama-3.3-70b-instruct'], keyUrl: 'https://novita.ai/settings/key-management' }),
-  oa({ id: 'nvidia', name: 'NVIDIA NIM', baseUrl: 'https://integrate.api.nvidia.com/v1', models: ['meta/llama-3.3-70b-instruct', 'deepseek-ai/deepseek-r1'], keyUrl: 'https://build.nvidia.com' }),
-  oa({ id: 'github', name: 'GitHub Models', baseUrl: 'https://models.github.ai/inference', models: ['openai/gpt-4.1', 'openai/gpt-4o-mini'], keyUrl: 'https://github.com/settings/tokens', notes: 'Free with a GitHub personal access token.' }),
+  oa({
+    id: 'cohere',
+    name: 'Cohere · trial key',
+    baseUrl: 'https://api.cohere.com/compatibility/v1',
+    models: ['command-a-03-2025', 'command-r-plus-08-2024'],
+    keyUrl: 'https://dashboard.cohere.com/api-keys',
+    dynamicModels: true,
+    notes: 'Free trial keys, no card. Refresh lists every chat model.',
+  }),
+  oa({
+    id: 'nebius',
+    name: 'Nebius AI Studio · free credits',
+    baseUrl: 'https://api.studio.nebius.com/v1',
+    models: ['deepseek-ai/DeepSeek-V3', 'Qwen/Qwen3-235B-A22B'],
+    keyUrl: 'https://studio.nebius.com/settings/api-keys',
+    dynamicModels: true,
+    notes: 'Starter credits, no card. Refresh loads the whole catalogue.',
+  }),
+  oa({
+    id: 'ovh',
+    name: 'OVHcloud AI Endpoints · free tier',
+    baseUrl: 'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1',
+    models: ['Meta-Llama-3_3-70B-Instruct', 'Qwen3-32B'],
+    keyUrl: 'https://endpoints.ai.cloud.ovh.net',
+    dynamicModels: true,
+    notes: 'Free tier with rate limits. Refresh loads the whole catalogue.',
+  }),
+  oa({
+    id: 'nvidia',
+    name: 'NVIDIA NIM · free tier',
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    models: ['meta/llama-3.3-70b-instruct', 'deepseek-ai/deepseek-r1', 'qwen/qwen3-coder-480b-a35b-instruct'],
+    keyUrl: 'https://build.nvidia.com/settings/api-keys',
+    dynamicModels: true,
+    notes: 'Free with a build.nvidia.com key starting nvapi-. Press refresh to load every hosted chat model.',
+  }),
+  oa({ id: 'github', name: 'GitHub Models', baseUrl: 'https://models.github.ai/inference', models: ['openai/gpt-4.1', 'openai/gpt-4o-mini'], keyUrl: 'https://github.com/settings/tokens', dynamicModels: true, notes: 'Free with a GitHub personal access token. Refresh loads every model.' }),
   oa({ id: 'llama', name: 'Meta Llama API', baseUrl: 'https://api.llama.com/compat/v1', models: ['Llama-4-Maverick-17B-128E-Instruct-FP8'], keyUrl: 'https://llama.developer.meta.com' }),
   oa({ id: 'qwen', name: 'Alibaba · Qwen', baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', models: ['qwen3-coder-plus', 'qwen-max'], keyUrl: 'https://bailian.console.alibabacloud.com' }),
   oa({ id: 'moonshot', name: 'Moonshot · Kimi', baseUrl: 'https://api.moonshot.ai/v1', models: ['kimi-k2-0905-preview', 'moonshot-v1-128k'], keyUrl: 'https://platform.moonshot.ai/console/api-keys' }),
@@ -64,7 +102,7 @@ export const PROVIDERS = [
   oa({ id: 'chutes', name: 'Chutes', baseUrl: 'https://llm.chutes.ai/v1', models: ['deepseek-ai/DeepSeek-V3'], keyUrl: 'https://chutes.ai/app/api' }),
   oa({ id: 'kluster', name: 'Kluster AI', baseUrl: 'https://api.kluster.ai/v1', models: ['klusterai/Meta-Llama-3.3-70B-Instruct-Turbo'], keyUrl: 'https://platform.kluster.ai/apikeys' }),
   oa({ id: 'lambda', name: 'Lambda Inference', baseUrl: 'https://api.lambda.ai/v1', models: ['llama3.3-70b-instruct-fp8'], keyUrl: 'https://cloud.lambda.ai/api-keys' }),
-  oa({ id: 'huggingface', name: 'Hugging Face Router', baseUrl: 'https://router.huggingface.co/v1', models: ['deepseek-ai/DeepSeek-V3-0324', 'Qwen/Qwen3-235B-A22B'], keyUrl: 'https://huggingface.co/settings/tokens', notes: 'Free monthly credits on the free tier.' }),
+  oa({ id: 'huggingface', name: 'Hugging Face Router', baseUrl: 'https://router.huggingface.co/v1', models: ['deepseek-ai/DeepSeek-V3-0324', 'Qwen/Qwen3-235B-A22B'],    keyUrl: 'https://huggingface.co/settings/tokens', dynamicModels: true, notes: 'Free monthly credits on the free tier. Refresh loads the router catalogue.' }),
   {
     id: 'azure',
     name: 'Azure OpenAI',
@@ -178,10 +216,11 @@ export const PROVIDERS = [
     kind: 'openai',
     group: 'custom',
     baseUrl: '',
-    models: [''],
+    models: [],
     keyRequired: false,
     baseUrlEditable: true,
-    notes: 'Any /chat/completions endpoint: LiteLLM, LocalAI, oMLX, your own proxy…',
+    dynamicModels: true,
+    notes: 'Any /chat/completions endpoint: LiteLLM, LocalAI, oMLX, your own proxy. Put the base URL in (…/v1 is enough) and refresh to list its models.',
   },
 ];
 
@@ -202,6 +241,7 @@ export function publicProvider(p) {
     local: !!p.local,
     notes: p.notes || '',
     baseUrlEditable: !!p.baseUrlEditable,
+    dynamicModels: !!p.dynamicModels,
     extraFields: p.extraFields || [],
   };
 }
@@ -222,6 +262,9 @@ function trimMessages(messages, limit = 60) {
   if (keep.length <= limit) return keep;
   return [keep[0], ...keep.slice(keep.length - (limit - 1))];
 }
+
+const NON_CHAT_MODEL =
+  /embed|rerank|deplot|kosmos|neva|ocr|segformer|^esm|molmim|diffdock|parabricks|riva|tts|asr|whisper|flux|clip|fuyu|nemoretriever|bge-|arctic-embed|biobert|chemberta|molmo|vila|sd-?xl/i;
 
 const SYSTEM_PROVIDER_HINT =
   'You are the build engine inside PiratesShip, a desktop tool that recreates sites, apps and games from reconstruction research.';
@@ -396,7 +439,9 @@ export async function listModels({ providerId, apiKey, baseUrl, extra = {} }) {
   const data = await readJsonSafe(res);
   if (!res.ok) throw providerError(provider, res, data);
   const list = data.data || data.models || [];
-  return list.map((m) => m.id || m.name).filter(Boolean).sort();
+  const ids = list.map((m) => m.id || m.name).filter(Boolean);
+  const usable = providerId === 'nvidia' ? ids.filter((id) => !NON_CHAT_MODEL.test(id)) : ids;
+  return usable.sort();
 }
 
 async function readJsonSafe(res) {

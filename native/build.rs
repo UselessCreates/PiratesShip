@@ -1,100 +1,85 @@
+use std::env;
+use std::path::PathBuf;
 
-
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
-fn subdirs(dir: &Path) -> Vec<PathBuf> {
-    let mut list: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_dir()).collect())
-        .unwrap_or_default();
-    list.sort();
-    list.reverse();
-    list
+fn word(value: u16) -> [u8; 2] {
+    value.to_le_bytes()
 }
 
-fn candidates() -> Vec<PathBuf> {
+fn dword(value: u32) -> [u8; 4] {
+    value.to_le_bytes()
+}
+
+fn block(type_id: u16, name_id: u16, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    if let Ok(rc) = std::env::var("RC") {
-        out.push(PathBuf::from(rc));
-    }
-    out.push(PathBuf::from("rc.exe"));
-    out.push(PathBuf::from("rc"));
-
-    for key in ["ProgramFiles(x86)", "ProgramFiles"] {
-        if let Ok(pf) = std::env::var(key) {
-            let kits = PathBuf::from(pf).join("Windows Kits").join("10").join("bin");
-            for version in subdirs(&kits) {
-                for arch in ["x64", "x86", "arm64"] {
-                    out.push(version.join(arch).join("rc.exe"));
-                }
-            }
-        }
-    }
-
-    for key in ["ProgramFiles", "ProgramFiles(x86)"] {
-        if let Ok(pf) = std::env::var(key) {
-            for year in subdirs(&PathBuf::from(pf).join("Microsoft Visual Studio")) {
-                for edition in subdirs(&year) {
-                    let tools = edition.join("VC").join("Tools").join("MSVC");
-                    for version in subdirs(&tools) {
-                        for host in ["Hostx64", "Hostx86"] {
-                            out.push(version.join("bin").join(host).join("x64").join("rc.exe"));
-                        }
-                    }
-                }
-            }
-        }
-    }
+    out.extend_from_slice(&dword(payload.len() as u32));
+    out.extend_from_slice(&dword(20));
+    out.extend_from_slice(&word(0xFFFF));
+    out.extend_from_slice(&word(type_id));
+    out.extend_from_slice(&word(0xFFFF));
+    out.extend_from_slice(&word(name_id));
+    out.extend_from_slice(&dword(0));
+    out.extend_from_slice(&word(0x1030));
+    out.extend_from_slice(&word(0x0409));
+    out.extend_from_slice(&dword(0));
+    out.extend_from_slice(&dword(0));
+    out.extend_from_slice(payload);
+    let pad = (4 - payload.len() % 4) % 4;
+    out.extend(std::iter::repeat_n(0u8, pad));
     out
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=app.rc");
     println!("cargo:rerun-if-changed=app.ico");
-    println!("cargo:rerun-if-changed=app-icon.rgba");
-
-    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
-    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("out dir"));
-
-    let rgba = manifest.join("app-icon.rgba");
-    let icon_rs = out_dir.join("icon_data.rs");
-    let usable = std::fs::metadata(&rgba).map(|m| m.len() == 64 * 64 * 4).unwrap_or(false);
-    if usable {
-        let _ = std::fs::copy(&rgba, out_dir.join("app_icon.rgba"));
-        let _ = std::fs::write(
-            &icon_rs,
-            "pub const ICON_RGBA: &[u8] = include_bytes!(\"app_icon.rgba\");\npub const ICON_SIZE: u32 = 64;\n",
-        );
-    } else {
-        let _ = std::fs::write(
-            &icon_rs,
-            "pub const ICON_RGBA: &[u8] = &[];\npub const ICON_SIZE: u32 = 0;\n",
-        );
-    }
-
-    if !manifest.join("app.rc").is_file() || !manifest.join("app.ico").is_file() {
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
+    let out = PathBuf::from(env::var("OUT_DIR").expect("out dir"));
+    let bytes = match std::fs::read(manifest.join("app.ico")) {
+        Ok(data) => data,
+        Err(_) => return,
+    };
+    if bytes.len() < 6 {
         return;
     }
-
-    let res = out_dir.join("app.res");
-
-    for exe in candidates() {
-        if exe.is_absolute() && !exe.is_file() {
-            continue;
-        }
-        let ok = Command::new(&exe)
-            .current_dir(&manifest)
-            .args(["/nologo", "/fo"])
-            .arg(&res)
-            .arg("app.rc")
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if ok {
-            println!("cargo:rustc-link-arg={}", res.display());
+    let count = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+    if count == 0 || bytes.len() < 6 + count * 16 {
+        return;
+    }
+    let mut group = Vec::new();
+    group.extend_from_slice(&word(0));
+    group.extend_from_slice(&word(1));
+    group.extend_from_slice(&word(count as u16));
+    let mut images: Vec<(u16, Vec<u8>)> = Vec::new();
+    for index in 0..count {
+        let at = 6 + index * 16;
+        let width = bytes[at];
+        let height = bytes[at + 1];
+        let colours = bytes[at + 2];
+        let reserved = bytes[at + 3];
+        let planes = u16::from_le_bytes([bytes[at + 4], bytes[at + 5]]);
+        let bits = u16::from_le_bytes([bytes[at + 6], bytes[at + 7]]);
+        let size = u32::from_le_bytes([bytes[at + 8], bytes[at + 9], bytes[at + 10], bytes[at + 11]]) as usize;
+        let offset = u32::from_le_bytes([bytes[at + 12], bytes[at + 13], bytes[at + 14], bytes[at + 15]]) as usize;
+        if offset + size > bytes.len() || size == 0 {
             return;
         }
+        let id = (index + 1) as u16;
+        group.extend_from_slice(&[width, height, colours, reserved]);
+        group.extend_from_slice(&word(planes));
+        group.extend_from_slice(&word(bits));
+        group.extend_from_slice(&dword(size as u32));
+        group.extend_from_slice(&word(id));
+        images.push((id, bytes[offset..offset + size].to_vec()));
     }
-
-    println!("cargo:warning=no resource compiler found - building without the icon");
+    let mut resource = Vec::with_capacity(32);
+    resource.extend_from_slice(&dword(0));
+    resource.extend_from_slice(&dword(32));
+    resource.extend_from_slice(&[0u8; 24]);
+    for (id, data) in &images {
+        resource.extend_from_slice(&block(3, *id, data));
+    }
+    resource.extend_from_slice(&block(14, 1, &group));
+    let target = out.join("app.res");
+    if std::fs::write(&target, resource).is_err() {
+        return;
+    }
+    println!("cargo:rustc-link-arg={}", target.display());
 }

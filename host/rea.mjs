@@ -272,8 +272,8 @@ export async function analyzeWebsite(url, { timeoutMs = 180000, signal, log = ()
       env: {
         ...process.env,
 
-        REA_MCP_INPUT_SCHEMA_PROFILE: process.env.REA_MCP_INPUT_SCHEMA_PROFILE || 'compact',
-        REA_MCP_OUTPUT_SCHEMA_PROFILE: process.env.REA_MCP_OUTPUT_SCHEMA_PROFILE || 'compact',
+        REA_MCP_INPUT_SCHEMA_PROFILE: process.env.REA_MCP_INPUT_SCHEMA_PROFILE || 'full',
+        REA_MCP_OUTPUT_SCHEMA_PROFILE: process.env.REA_MCP_OUTPUT_SCHEMA_PROFILE || 'off',
         NO_COLOR: '1',
       },
     });

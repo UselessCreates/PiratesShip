@@ -6,7 +6,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 
 export const APP_NAME = 'PiratesShip';
-export const VERSION = '0.1.0';
+export const VERSION = '0.1.1';
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

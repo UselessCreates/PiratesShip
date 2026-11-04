@@ -178,14 +178,19 @@ async function handleApi(req, res, url, token) {
   if (route === '/api/provider/select' && method === 'POST') {
     const body = await readBody(req);
     const provider = getProvider(body.providerId);
-    if (body.apiKey !== undefined && body.apiKey !== '') setSecret(`provider:${provider.id}`, body.apiKey);
+    const current = config().provider || {};
+    const same = current.id === provider.id;
+    if (body.apiKey !== undefined && body.apiKey !== null && body.apiKey !== '') setSecret(`provider:${provider.id}`, body.apiKey);
     if (body.apiKey === null) setSecret(`provider:${provider.id}`, '');
+    const typedBase = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
+    const keptBase = same && current.baseUrl ? current.baseUrl : provider.baseUrl;
+    const keptModel = same && current.model ? current.model : '';
     saveConfig({
       provider: {
         id: provider.id,
-        model: body.model || provider.models[0] || '',
-        baseUrl: body.baseUrl !== undefined ? body.baseUrl : provider.baseUrl,
-        extra: body.extra || {},
+        model: (body.model || keptModel || provider.models[0] || '').trim(),
+        baseUrl: typedBase || keptBase,
+        extra: body.extra && Object.keys(body.extra).length ? body.extra : same ? current.extra || {} : {},
       },
     });
     json(res, 200, { ok: true, state: statePayload() });
@@ -213,12 +218,13 @@ async function handleApi(req, res, url, token) {
 
   if (route === '/api/provider/models' && method === 'GET') {
     const provider = getProvider(q.get('providerId') || config().provider.id);
-    const key = getSecret(`provider:${provider.id}`) || null;
+    const key = q.get('key') || getSecret(`provider:${provider.id}`) || null;
+    const stored = config().provider.id === provider.id ? config().provider.baseUrl : '';
     try {
       const models = await listModels({
         providerId: provider.id,
         apiKey: key,
-        baseUrl: q.get('baseUrl') || provider.baseUrl,
+        baseUrl: q.get('baseUrl') || stored || provider.baseUrl,
         extra: config().provider.extra || {},
       });
       json(res, 200, { ok: true, models });

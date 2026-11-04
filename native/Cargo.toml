@@ -1,21 +1,20 @@
 [package]
 name = "piratesship"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
-description = "PiratesShip - recreate any site, app or game"
-license = "MIT"
+build = "build.rs"
 
 [[bin]]
 name = "PiratesShip"
 path = "src/main.rs"
 
 [dependencies]
-tao = "0.34"
-wry = "0.57"
+wry = "=0.57.1"
+tao = "=0.34.8"
 
 [profile.release]
 opt-level = "s"
 lto = true
 codegen-units = 1
-strip = true
 panic = "abort"
+strip = true

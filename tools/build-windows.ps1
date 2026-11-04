@@ -20,16 +20,30 @@ if (Test-Path $dist) {
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
 Copy-Item $exe (Join-Path $dist 'PiratesShip.exe') -Force
-Copy-Item -Recurse -Force (Join-Path $root 'host') (Join-Path $dist 'host')
-Copy-Item -Recurse -Force (Join-Path $root 'ui') (Join-Path $dist 'ui')
+foreach ($part in 'host', 'ui') {
+  $target = Join-Path $dist $part
+  New-Item -ItemType Directory -Force -Path $target | Out-Null
+  Copy-Item -Path (Join-Path $root "$part\*") -Destination $target -Recurse -Force
+}
 Copy-Item (Join-Path $root 'package.json') (Join-Path $dist 'package.json') -Force
 Copy-Item (Join-Path $root 'README.md') (Join-Path $dist 'README.md') -Force
+Copy-Item (Join-Path $root 'RELEASE.md') (Join-Path $dist 'RELEASE.md') -Force
 
 $node = Get-Command node -ErrorAction SilentlyContinue
 if ($node) {
   New-Item -ItemType Directory -Force -Path (Join-Path $dist 'runtime') | Out-Null
-  Copy-Item $node.Source (Join-Path $dist 'runtime/node.exe') -Force
-  Write-Host "bundled node $(& node -v) into dist/runtime/node.exe" -ForegroundColor Green
+  $target = Join-Path $dist 'runtime/node.exe'
+  $current = (Test-Path $target) -and ((Get-Item $target).Length -eq (Get-Item $node.Source).Length)
+  if ($current) {
+    Write-Host "bundled node already in place" -ForegroundColor Green
+  } else {
+    try {
+      Copy-Item $node.Source $target -Force
+      Write-Host "bundled node $(& node -v) into dist/runtime/node.exe" -ForegroundColor Green
+    } catch {
+      Write-Host "runtime/node.exe is in use - keeping the existing copy" -ForegroundColor Yellow
+    }
+  }
 } else {
   Write-Host "node not found on PATH - the exe will look for it at runtime" -ForegroundColor Yellow
 }

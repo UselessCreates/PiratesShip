@@ -452,14 +452,17 @@ function renderProviderPanel(body, p) {
             <p class="note">${p.keyUrl ? `get one at <a href="${p.keyUrl}" target="_blank" rel="noreferrer">${escapeHtml(new URL(p.keyUrl).host)}</a> · ` : ''}stored locally, never logged.</p>`
       }
       ${
-        p.models.length
+        p.models.length || p.dynamicModels
           ? `<label class="field">model
               <span class="inline">
                 <input class="text" id="model-input" list="model-list" value="${escapeHtml(S.model || p.models[0] || '')}" spellcheck="false" />
                 <button class="btn ghost sm" id="refresh-models" type="button">refresh</button>
               </span>
             </label>
-            <datalist id="model-list">${p.models.map((m) => `<option value="${escapeHtml(m)}"></option>`).join('')}</datalist>`
+            <datalist id="model-list">${p.models.map((m) => `<option value="${escapeHtml(m)}"></option>`).join('')}</datalist>
+            <p class="note" id="model-hint">${
+              p.dynamicModels ? 'loads every chat model this endpoint hosts — paste the key, then refresh' : ''
+            }</p>`
           : ''
       }
       ${
@@ -506,22 +509,33 @@ function renderProviderPanel(body, p) {
     });
   });
 
+  const loadModels = async (quiet) => {
+    const out = await api.get(
+      `/api/provider/models?providerId=${encodeURIComponent(p.id)}&baseUrl=${encodeURIComponent(S.baseUrl || '')}${
+        S.key ? `&key=${encodeURIComponent(S.key)}` : ''
+      }`
+    );
+    const hint = panel.querySelector('#model-hint');
+    const dl = panel.querySelector('#model-list');
+    if (out.models?.length && dl) {
+      dl.innerHTML = out.models.map((m) => `<option value="${escapeHtml(m)}"></option>`).join('');
+      p.models = out.models;
+      if (hint) hint.textContent = `${out.models.length} models · type to filter, or pick one from the list`;
+      if (!quiet) toast(`${out.models.length} models available`);
+      return true;
+    }
+    if (hint) hint.textContent = out.error || 'no models listed';
+    if (!quiet) toast(out.error || 'no models listed');
+    return false;
+  };
+
   const refresh = panel.querySelector('#refresh-models');
   if (refresh) {
     refresh.addEventListener('click', async () => {
       refresh.disabled = true;
       refresh.textContent = '…';
       try {
-        const out = await api.get(
-          `/api/provider/models?providerId=${encodeURIComponent(p.id)}&baseUrl=${encodeURIComponent(S.baseUrl || '')}`
-        );
-        if (out.models?.length) {
-          const dl = panel.querySelector('#model-list');
-          dl.innerHTML = out.models.map((m) => `<option value="${escapeHtml(m)}"></option>`).join('');
-          toast(`${out.models.length} models available`);
-        } else {
-          toast(out.error || 'no models listed');
-        }
+        await loadModels(false);
       } catch (e) {
         toast(e.message);
       }
@@ -529,6 +543,7 @@ function renderProviderPanel(body, p) {
       refresh.textContent = 'refresh';
     });
   }
+  if (p.dynamicModels) loadModels(true).catch(() => {});
 
   panel.querySelector('#test-btn').addEventListener('click', async () => {
     const out = panel.querySelector('#test-out');
@@ -1022,6 +1037,16 @@ function handleJobEvent(evt) {
     case 'files': {
       const list = (evt.files || []).map((f) => `<div><b>${escapeHtml(f.path)}</b><span>${fmtBytes(f.bytes)}</span></div>`).join('');
       feedBlock(`<details class="block" open><summary>files</summary><div class="files">${list}</div></details>`);
+      break;
+    }
+    case 'score': {
+      const dims = (evt.dimensions || [])
+        .map((d) => `<span class="stat"><b>${d.ratio}%</b> ${escapeHtml(d.label)}</span>`)
+        .join('');
+      const gaps = (evt.gaps || []).slice(0, 4).map((g) => `<div>· ${escapeHtml(g)}</div>`).join('');
+      feedBlock(`<div class="score"><b class="score-num">${evt.score}</b><em>/100 similar${
+        evt.judged ? ` · judge ${evt.judged}` : ''
+      }</em></div><div class="stats">${dims}</div>${gaps ? `<div class="note">${gaps}</div>` : ''}`);
       break;
     }
     case 'done': {

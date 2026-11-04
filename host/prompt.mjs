@@ -148,12 +148,45 @@ Rules:
 Reported problems:
 `;
 
+const REAP_GUIDANCE = {
+  site: `You are rebuilding a website. Follow REA's website-clone and feature-trace discipline: read the capture as evidence, not inspiration. Recover the page section by section in document order, the client routes it exposes, the request each view makes, and the state pattern that drives the UI. For every claim name its evidence in the dossier: a heading, navigation label, button label, palette hex, font family or screenshot angle. Separate MEASURED facts from INFERRED choices and from what the capture could not show. Rebuild structure and behaviour with original markup, copy, icons and imagery; never reuse a brand name, wordmark, marketing sentence, logo or asset. Finish with a section-by-section spec the build must satisfy.`,
+  app: `You are rebuilding an application. Follow REA's application-map and feature-trace discipline: treat the capture as evidence. Recover the entry points, the visible modules and their responsibilities, the data each feature reads and writes, how state persists between sessions, how the app talks to other processes or services, and what it does when a step fails or data is missing. Cite the dossier for every claim: a heading, label, button, palette hex, font or screenshot. Separate MEASURED facts, INFERRED choices and UNKNOWNS. Rebuild the behaviour with original code, names and assets; never copy a brand name, wordmark, proprietary copy or asset. Finish with a feature-and-state spec the build must satisfy.`,
+  game: `You are rebuilding a game. Follow REA's gameplay-recovery discipline: treat the capture as evidence. Recover the loop and tick order, the mechanics one at a time - movement, physics, scoring, spawning, progression, win and lose - the constants and thresholds behind each rule, the input scheme, and the feedback that tells the player what happened. Cite the dossier for every claim. Separate MEASURED facts, INFERRED rules and UNKNOWNS. Implement the rules in plain JavaScript with original art, names and text; never copy a brand, sprite, level layout or sound. Finish with a rule table the build must match.`,
+};
+
+export function reapGuidance(kind) {
+  return REAP_GUIDANCE[String(kind || '').toLowerCase()] || REAP_GUIDANCE.site;
+}
+
+export const JUDGE_PROMPT = `You are the fidelity judge inside PiratesShip. You receive measurements taken from a reference site and the files a build produced. Score how close the build is and name what to change.
+
+Judge only what the evidence supports: section order and count, headings, navigation and button labels, type scale, container widths, radii, palette, breakpoints, density. Ignore brand names and trademarks.
+
+Answer with one JSON object and nothing else:
+{"score": 0, "gaps": ["specific instruction"]}
+
+Score honestly. 90+ means a reader comparing the two side by side would call them the same page. 60 means the same genre and structure with an obvious homemade feel. Below 40 means the build ignored the evidence. Every gap names an exact value, label or element to add, remove or move, and is fixable in one edit. Never invent a requirement that is not in the measurements.`;
+
 export function dossierForPrompt(dossierJson, maxChars = 64000) {
   const parts = [];
   const j = dossierJson || {};
   parts.push(`TARGET: ${j.target || 'unknown'} (kind: ${j.kind || 'site'})`);
   if (j.url) parts.push(`REFERENCE URL: ${j.url}`);
   if (j.userBrief) parts.push(`USER BRIEF: ${j.userBrief}`);
+  if (j.designLines?.length) {
+    parts.push(
+      `\nMEASURED DESIGN SYSTEM (read from the reference stylesheets — reuse these numbers instead of inventing a new scale):\n${j.designLines
+        .map((l) => `- ${l}`)
+        .join('\n')}`
+    );
+  }
+  if (j.outline?.length) {
+    parts.push(
+      `\nPAGE OUTLINE — ${j.outline.length} sections in document order. Build one section per line, same order, same count, same labels:\n${j.outline
+        .map((o) => o.line)
+        .join('\n')}`
+    );
+  }
   if (j.pages?.length) {
     parts.push(`\nPAGES CAPTURED:\n${j.pages.map((p) => `- ${p.url} (${p.title || 'no title'})`).join('\n')}`);
   }
